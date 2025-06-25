@@ -4,6 +4,12 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional
 import uvicorn
 
+# my imports
+from datetime import datetime
+import httpx # isn't in requirements, but just used it for something else, so adding it myself
+import uuid
+
+
 app = FastAPI(title="Weather Data System", version="1.0.0")
 
 app.add_middleware(
@@ -16,6 +22,30 @@ app.add_middleware(
 
 # In-memory storage for weather data
 weather_storage: Dict[str, Dict[str, Any]] = {}
+
+async def fetch_weather_data(location: str) -> Dict[str, Any]:
+    """
+    Fetch weather data from WeatherStack API
+    """
+    params = {
+        "access_key": "9aa7da6068a10e0e5d4900a4d99ab79f", # hardcoded b/c key is throwaway
+        "query": location,
+        "units": "m"
+    }
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get("http://api.weatherstack.com/current", params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if "error" in data: # validate response
+                # assuming that an API error response contains key "error"
+                raise HTTPException(status_code=400, detail=f"Weather API error: {data['error']['info']}")
+            return data
+        
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch weather data: {str(e)}")
 
 class WeatherRequest(BaseModel):
     date: str
@@ -34,7 +64,29 @@ async def create_weather_request(request: WeatherRequest):
     3. Stores combined data with unique ID in memory
     4. Returns the ID to frontend
     """
-    pass
+
+    # Validation
+    if not request.location.strip():
+        raise HTTPException(status_code=400, detail="Location is required")
+    if not request.date.strip():
+        raise HTTPException(status_code=400, detail="Date is required")
+    
+    # API call
+    weather_data = await fetch_weather_data(request.location)
+
+    # bookkeeping
+    weather_id = str(uuid.uuid4())
+    combined_data = {
+        "id": weather_id,
+        "request_date": request.date,
+        "location": request.location,
+        "notes": request.notes,
+        "weather_data": weather_data,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    weather_storage[weather_id] = combined_data
+    
+    return WeatherResponse(id=weather_id)
 
 @app.get("/weather/{weather_id}")
 async def get_weather_data(weather_id: str):
